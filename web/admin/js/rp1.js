@@ -661,7 +661,7 @@ class ExtractMap extends MV.MVMF.NOTIFICATION
          }
          else pJSONObjectX = null;
 
-         this.GetRemovedNodes (pJSONObjectX, apRMXObject[n]);
+         this.GetRemovedNodes (pJSONObjectX, apRMXObject[n], mpRemovedNodes);
       }
    }
 
