@@ -1,6 +1,6 @@
 {
    "map": {
-      "namespace": "MY_COMPANY_ID/map",
+      "namespace": "motojungle/map",
       "service": "MVIO",
       "require": "MVRP_Map",
       "connect": "secure=true;server=<PUBLIC_DOMAIN>:443;session=RP1",
@@ -8,4 +8,5 @@
       "RootUrl": "https://<PUBLIC_DOMAIN>"
    }
 }
+
 
