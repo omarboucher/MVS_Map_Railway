@@ -37,7 +37,7 @@ class HndlrHealth extends MVHANDLER
             }
             else
             {
-               dbStatus = 'ok';
+               dbStatus = 'error';
             }
          }
          catch (err)

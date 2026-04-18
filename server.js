@@ -297,7 +297,7 @@ class MVSF_Map
             this.#pServer.Run ();
 
             console.log ('SQL Server READY');
-            InitSQL    (pMVSQL, this.#pServer, null);
+            InitSQL    (pMVSQL, this.#pServer, Settings.Info || null);
             InitHealth (pMVSQL);
 
             this.RegisterShutdown ();

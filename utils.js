@@ -6,7 +6,7 @@ var g_pServer = null;
 var g_pInfo   = null;
 
 var g_nTimeout    = 0;
-var g_nInterval   = null;
+var g_nInterval   = 0;
 
 
 /*******************************************************************************************************************************
@@ -206,10 +206,10 @@ function InitSQL (pSQL, pServer, pInfo)
 
 function StopEventLoop ()
 {
-   if (g_nInterval !== null)
+   if (g_nInterval !== 0)
    {
       clearInterval (g_nInterval);
-      g_nInterval = null;
+      g_nInterval = 0;
    }
 
    if (g_nTimeout !== 0)
