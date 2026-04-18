@@ -5,7 +5,8 @@
    "main": "server.js",
    "scripts": {
       "start": "node server",
-      "dev": "nodemon server"
+      "dev": "nodemon server",
+      "test": "jest --testPathPattern=tests/"
    },
    "repository": {
       "type": "git",
@@ -19,6 +20,7 @@
       "mysql2": "^3.6.0"
    },
    "devDependencies": {
+      "jest": "^29.7.0",
       "nodemon": "^2.0.22"
    }
 }

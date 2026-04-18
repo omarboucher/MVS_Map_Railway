@@ -1,10 +1,12 @@
-const fs = require ('node:fs');
+const fs   = require ('node:fs');
+const path = require ('node:path');
 
 var g_pMVSQL  = null;
 var g_pServer = null;
 var g_pInfo   = null;
 
-var g_nTimeout = 0;
+var g_nTimeout    = 0;
+var g_nInterval   = null;
 
 
 /*******************************************************************************************************************************
@@ -64,6 +66,14 @@ function RunQuery (Session, pData, fnRSP, fn, pSQLData)
 
             fnRSP (fn, pResult);
          }
+      ).catch
+      (
+         (err) =>
+         {
+            console.error ('RunQuery error [' + pSQLData.sProc + ']:', err.message);
+            pResult.nResult = -1;
+            fnRSP (fn, pResult);
+         }
       );
    }
    else fnRSP (fn, pResult);
@@ -73,52 +83,52 @@ function RunQuery2Ex (Session, pData, fnRSP, fn, bRecover, pSQLData)
 {
    let pResult = { nResult: -1, aResultSet: [] };
 
-   if (true) //Session.bRP1 && (pSQLData.Param || Session.bGuest == 0))
+   const Query = g_pMVSQL.Compose (pSQLData.sProc, pData, pSQLData.aData, Session.sIPAddress, (Session.twRPersonaIx ? Session.twRPersonaIx : 1), 2);
+
+   if (Query)
    {
-      const Query = g_pMVSQL.Compose (pSQLData.sProc, pData, pSQLData.aData, Session.sIPAddress, (Session.twRPersonaIx ? Session.twRPersonaIx : 1), 2);
-
-      if (Query)
-      {
-         g_pMVSQL.Exec (Query).then
-         (
-            (result) =>
+      g_pMVSQL.Exec (Query).then
+      (
+         (result) =>
+         {
+            if (result != null)
             {
-               if (result != null)
+               if (bRecover && result.output.nResult == 0)
                {
-                  // TODO: Only Join the socket and send recover IF we are not subscribed
-                  if (bRecover && result.output.nResult == 0)
-                  {
-                     pObjectHead = JSON.parse (result.recordsets[0][0].Object).pObjectHead;
+                  const pObjectHead = JSON.parse (result.recordsets[0][0].Object).pObjectHead;
 
-                     let sChannelName = pObjectHead.wClass_Object + '-' + pObjectHead.twObjectIx;
+                  let sChannelName = pObjectHead.wClass_Object + '-' + pObjectHead.twObjectIx;
 
-                     Session.socket.join (sChannelName);
-                     Session.socket.emit ('recover',
-                        {
-                           nResult:    result.output.nResult,
-                           aResultSet: result.recordsets,
-                        }
-                     );
-                  }
+                  Session.socket.join (sChannelName);
+                  Session.socket.emit ('recover',
+                     {
+                        nResult:    result.output.nResult,
+                        aResultSet: result.recordsets,
+                     }
+                  );
+               }
+               else
+               {
+                  if (pSQLData.Param == 0)
+                     MemResult (pResult, result);
                   else
-                  {
-if (pSQLData.Param == 0)
-   MemResult (pResult, result);
-else
-   RawResult (pResult, result);
-//                     pResult.aResultSet = result.recordsets;
-
-//                     EventFetch ();
-                  }
-
-                  pResult.nResult = result.output.nResult;
+                     RawResult (pResult, result);
                }
 
-               fnRSP (fn, pResult);
+               pResult.nResult = result.output.nResult;
             }
-         );
-      }
-      else fnRSP (fn, pResult);
+
+            fnRSP (fn, pResult);
+         }
+      ).catch
+      (
+         (err) =>
+         {
+            console.error ('RunQuery2Ex error [' + pSQLData.sProc + ']:', err.message);
+            pResult.nResult = -1;
+            fnRSP (fn, pResult);
+         }
+      );
    }
    else fnRSP (fn, pResult);
 }
@@ -148,9 +158,13 @@ function EventQueue (pServer)
 
             for (let i=0; i < aRow.length; i++)
             {
-               pObject = JSON.parse (aRow[i].Object);
+               const pObject = JSON.parse (aRow[i].Object);
 
-               let sChannelName = 'GLOBALREFRESH'; //pObject.pControl.wClass_Object + '-' + pObject.pControl.twObjectIx;
+               // Target the specific object's room; fall back to global broadcast
+               const pControl      = pObject.pControl || pObject.pObjectHead;
+               const sChannelName  = (pControl && pControl.wClass_Object && pControl.twObjectIx)
+                                       ? pControl.wClass_Object + '-' + pControl.twObjectIx
+                                       : 'GLOBALREFRESH';
 
                g_pServer.io.in (sChannelName).emit ('refresh', pObject);
             }
@@ -183,33 +197,74 @@ function InitSQL (pSQL, pServer, pInfo)
    g_pServer = pServer;
    g_pInfo   = pInfo;
 
-//RunQuery2 ({ sIPAddress: '10.10.1.100' }, { twRMRootIx: 1 }, Test, null, { sProc: 'get_RMRoot_Update', aData: [ 'twRMRootIx' ], Param: 0 });
-   setInterval (EventFetch, 1000);
+   g_nInterval = setInterval (EventFetch, 1000);
+
+   // Clear the polling interval on graceful shutdown
+   process.once ('SIGTERM', StopEventLoop);
+   process.once ('SIGINT',  StopEventLoop);
+}
+
+function StopEventLoop ()
+{
+   if (g_nInterval !== null)
+   {
+      clearInterval (g_nInterval);
+      g_nInterval = null;
+   }
+
+   if (g_nTimeout !== 0)
+   {
+      clearTimeout (g_nTimeout);
+      g_nTimeout = 0;
+   }
 }
 
 function GetInfo (sEntry, twObjectIx, fnRSP, fn)
 {
-   if (g_pInfo)
+   if (!g_pInfo)
    {
-      let sObjectIx = twObjectIx.toString ();
-
-      for (let i=sObjectIx.length; i < 10; i++)
-         sObjectIx = '0' + sObjectIx;
-
-      let sFileName = g_pInfo[sEntry] + sEntry + '\\' + sObjectIx.slice (0, 1) + '\\' + sObjectIx.slice (1, 4) + '\\' + sObjectIx.slice (4, 7) + '\\' + sObjectIx + '.json';
-
-      fs.readFile (sFileName, 'utf8', (err, data) => {
-         if (err)
-         {
-            fnRSP (fn, { nResult: -1 });
-         }
-         else
-         {
-            fnRSP (fn, { nResult: 0, sData: data });
-         }
-      });
+      fnRSP (fn, { nResult: -2 });
+      return;
    }
-   else fnRSP (fn, { nResult: -2 });
+
+   // Sanitize: sEntry must be a plain alphanumeric identifier (no path separators)
+   if (typeof sEntry !== 'string' || !/^[A-Za-z0-9_-]+$/.test (sEntry))
+   {
+      fnRSP (fn, { nResult: -3 });
+      return;
+   }
+
+   const sObjectIx = String (twObjectIx).padStart (10, '0');
+
+   const sFileName = path.join (
+      g_pInfo[sEntry],
+      sEntry,
+      sObjectIx.slice (0, 1),
+      sObjectIx.slice (1, 4),
+      sObjectIx.slice (4, 7),
+      sObjectIx + '.json'
+   );
+
+   // Ensure the resolved path stays within the expected base directory
+   const sBase = path.resolve (g_pInfo[sEntry]);
+   const sResolved = path.resolve (sFileName);
+
+   if (!sResolved.startsWith (sBase + path.sep) && sResolved !== sBase)
+   {
+      fnRSP (fn, { nResult: -3 });
+      return;
+   }
+
+   fs.readFile (sFileName, 'utf8', (err, data) => {
+      if (err)
+      {
+         fnRSP (fn, { nResult: -1 });
+      }
+      else
+      {
+         fnRSP (fn, { nResult: 0, sData: data });
+      }
+   });
 }
 
 module.exports =
@@ -218,5 +273,6 @@ module.exports =
    RunQuery2,
    RunQuery2Ex,
    InitSQL,
+   StopEventLoop,
    GetInfo
 }

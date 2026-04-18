@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+
+# Generated config (rebuilt from .template on every server start)
+web/public/config/fabric.msf.json
+
+# OS
+.DS_Store
+Thumbs.db

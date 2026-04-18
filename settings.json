@@ -37,5 +37,10 @@
       "config": {
          "connectionString": "Driver=SQL Server;Server=<DBHOST>;Database=<DBNAME>;Trusted_Connection=yes;"
       }
+   },
+
+   "_comment4": "'Fabric' holds runtime config injected into fabric.msf.json at startup. COMPANY_ID must match your RP1 Developer Center Company ID (lowercase).",
+   "Fabric": {
+      "sCompanyId": "<COMPANY_ID>"
    }
 }

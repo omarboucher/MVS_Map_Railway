@@ -1,5 +1,5 @@
 {
-   "Modules":   [ "RMBase", "RMRoot", "RMCObject", "RMPObject", "RMTObject" ],
+   "Modules":   [ "RMBase", "RMRoot", "RMCObject", "RMPObject", "RMTObject", "Health", "Assets" ],
    "aProtocol":  {
       "REST":     true,
       "SocketIO": true

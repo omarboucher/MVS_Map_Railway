@@ -1,5 +1,7 @@
-const { MVSF         } = require ('@metaversalcorp/mvsf');
-const { InitSQL      } = require ('./utils.js');
+const { MVSF                    } = require ('@metaversalcorp/mvsf');
+const { InitSQL                 } = require ('./utils.js');
+const { InitHealth              } = require ('./Handlers/Health.js');
+const { parseSQLWithDelimiters  } = require ('./lib/sqlUtils.js');
 const Settings      = require ('./settings.json');
 const fs            = require ('fs');
 const path          = require ('path');
@@ -7,6 +9,9 @@ const mysql         = require ('mysql2/promise');
 const zlib          = require ('zlib');
 
 const { MVSQL_MYSQL  } = require ('@metaversalcorp/mvsql_mysql');
+
+// Required environment variables that must be present at startup
+const REQUIRED_ENV_VARS = [ 'PORT', 'MYSQLHOST', 'MYSQLPORT', 'MYSQLUSER', 'MYSQLPASSWORD', 'MYSQLDATABASE' ];
 
 /*******************************************************************************************************************************
 **                                                     Main                                                                   **
@@ -18,7 +23,9 @@ class MVSF_Map
 
    constructor ()
    {
+      this.ValidateEnv ();
       this.ReadFromEnv (Settings.SQL.config, [ "host", "port", "user", "password", "database" ]);
+      this.ReadFromEnv (Settings.Fabric,     [ "sCompanyId" ]);
       this.ProcessFabricConfig ();
 
       switch (Settings.SQL.type)
@@ -33,8 +40,21 @@ class MVSF_Map
       }
    }
 
+   ValidateEnv ()
+   {
+      const aMissing = REQUIRED_ENV_VARS.filter (sVar => !process.env[sVar]);
+
+      if (aMissing.length > 0)
+      {
+         console.error ('Missing required environment variables: ' + aMissing.join (', '));
+         console.error ('Please set these variables before starting the server. See .env.example for reference.');
+         process.exit (1);
+      }
+   }
+
    #GetToken (sToken)
    {
+      if (typeof sToken !== 'string') return null;
       const match = sToken.match (/<([^>]+)>/);
       return match ? match[1] : null;
    }
@@ -52,16 +72,24 @@ class MVSF_Map
 
    ProcessFabricConfig ()
    {
-      const sFabricPath = path.join (__dirname, 'web', 'public', 'config', 'fabric.msf.json');
+      // Always read from the template so placeholders survive server restarts
+      const sTemplatePath = path.join (__dirname, 'web', 'public', 'config', 'fabric.msf.json.template');
+      const sFabricPath   = path.join (__dirname, 'web', 'public', 'config', 'fabric.msf.json');
+
+      // Fall back to the main file if the template doesn't exist yet
+      const sSourcePath = fs.existsSync (sTemplatePath) ? sTemplatePath : sFabricPath;
 
       try
       {
-         let sContent = fs.readFileSync (sFabricPath, 'utf8');
+         let sContent = fs.readFileSync (sSourcePath, 'utf8');
 
-         // Replace all occurrences of <PUBLIC_DOMAIN> with the actual environment variable
-         // Check for PUBLIC_DOMAIN first, fallback to RAILWAY_PUBLIC_DOMAIN for Railway compatibility
+         // Replace <PUBLIC_DOMAIN>: check PUBLIC_DOMAIN first, fallback to RAILWAY_PUBLIC_DOMAIN
          const sPublicDomain = process.env.PUBLIC_DOMAIN || process.env.RAILWAY_PUBLIC_DOMAIN || '';
          sContent = sContent.replace (/<PUBLIC_DOMAIN>/g, sPublicDomain);
+
+         // Replace <COMPANY_ID> from environment or settings
+         const sCompanyId = process.env.COMPANY_ID || Settings.Fabric.sCompanyId || '';
+         sContent = sContent.replace (/<COMPANY_ID>/g, sCompanyId);
 
          fs.writeFileSync (sFabricPath, sContent, 'utf8');
       }
@@ -71,99 +99,22 @@ class MVSF_Map
       }
    }
 
-   #ParseSQLWithDelimiters (sSQLContent)
-   {
-      const aStatements = [];
-      let sCurrentDelimiter = ';';
-      const aLines = sSQLContent.split (/\r?\n/);
-      let sCurrentStatement = '';
-
-      for (let i = 0; i < aLines.length; i++)
-      {
-         const sLine = aLines[i];
-         const sTrimmedLine = sLine.trim ();
-
-         // Check for DELIMITER command (must be at start of line, case-insensitive)
-         const nDelimiterMatch = sTrimmedLine.match (/^DELIMITER\s+(.+)$/i);
-
-         if (nDelimiterMatch)
-         {
-            // If we have accumulated a statement, save it before changing delimiter
-            if (sCurrentStatement.trim ().length > 0)
-            {
-               const sStatement = sCurrentStatement.trim ();
-               if (!sStatement.match (/^--/))
-               {
-                  aStatements.push (sStatement);
-               }
-               sCurrentStatement = '';
-            }
-
-            // Update delimiter (remove quotes if present)
-            sCurrentDelimiter = nDelimiterMatch[1].trim ().replace (/^['"]|['"]$/g, '');
-            // Skip the DELIMITER line itself
-            continue;
-         }
-
-         // Add line to current statement
-         if (sCurrentStatement.length > 0)
-         {
-            sCurrentStatement += '\n' + sLine;
-         }
-         else
-         {
-            sCurrentStatement = sLine;
-         }
-
-         // Check if current statement ends with the delimiter
-         // We need to check if the delimiter appears at the end (possibly with whitespace)
-         const nDelimiterIndex = sCurrentStatement.lastIndexOf (sCurrentDelimiter);
-         if (nDelimiterIndex !== -1)
-         {
-            // Check if delimiter is at the end (allowing for trailing whitespace)
-            const sAfterDelimiter = sCurrentStatement.substring (nDelimiterIndex + sCurrentDelimiter.length).trim ();
-
-            // If there's only whitespace or newlines after the delimiter, it's the end of the statement
-            if (sAfterDelimiter.length === 0 || /^[\r\n\s]*$/.test (sAfterDelimiter))
-            {
-               // Extract the statement (without the delimiter)
-               const sStatement = sCurrentStatement.substring (0, nDelimiterIndex).trim ();
-
-               if (sStatement.length > 0 && !sStatement.match (/^--/))
-               {
-                  aStatements.push (sStatement);
-               }
-
-               sCurrentStatement = '';
-            }
-         }
-      }
-
-      // Add any remaining statement
-      if (sCurrentStatement.trim ().length > 0)
-      {
-         const sStatement = sCurrentStatement.trim ();
-         if (!sStatement.match (/^--/))
-         {
-            aStatements.push (sStatement);
-         }
-      }
-
-      return aStatements;
-   }
-
    async InitializeDatabase (pMVSQL)
    {
       const sDatabaseName = 'MVD_RP1_Map';
-      const sSQLFile = path.join (__dirname, 'MVD_RP1_Map.sql');
-      const sSQLGzFile = path.join (__dirname, 'MVD_RP1_Map.sql.gz');
+      const sSQLFile      = path.join (__dirname, 'MVD_RP1_Map.sql');
+      const sSQLGzFile    = path.join (__dirname, 'MVD_RP1_Map.sql.gz');
 
       try
       {
-         // Create a connection without specifying a database, with multipleStatements enabled
-         const pConfig = { ...Settings.SQL.config };
-         delete pConfig.database; // Remove database from config to connect without it
-         pConfig.multipleStatements = true; // Enable multiple statements
+         // Build a connection config from the already-resolved values (no placeholders remain)
+         const pConfig = {
+            host:               Settings.SQL.config.host,
+            port:               Settings.SQL.config.port,
+            user:               Settings.SQL.config.user,
+            password:           Settings.SQL.config.password,
+            multipleStatements: true
+         };
 
          const pConnection = await mysql.createConnection (pConfig);
 
@@ -194,7 +145,7 @@ class MVSF_Map
             }
 
             // Parse SQL respecting DELIMITER statements
-            const aStatements = this.#ParseSQLWithDelimiters (sSQLContent);
+            const aStatements = parseSQLWithDelimiters (sSQLContent);
 
             console.log (`Parsed ${aStatements.length} SQL statements. Executing...`);
 
@@ -249,14 +200,95 @@ class MVSF_Map
       }
    }
 
+   async RunMigrations ()
+   {
+      const sMigrationsDir = path.join (__dirname, 'migrations');
+
+      if (!fs.existsSync (sMigrationsDir))
+         return;
+
+      const pConfig = {
+         host:     Settings.SQL.config.host,
+         port:     Settings.SQL.config.port,
+         user:     Settings.SQL.config.user,
+         password: Settings.SQL.config.password,
+         database: 'MVD_RP1_Map'
+      };
+
+      let pConnection;
+
+      try
+      {
+         pConnection = await mysql.createConnection (pConfig);
+
+         // Ensure the migrations tracking table exists
+         await pConnection.query (`
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+               version     INT           NOT NULL,
+               applied_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               description VARCHAR (255) NOT NULL DEFAULT '',
+               CONSTRAINT PK_schema_migrations PRIMARY KEY (version)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+         `);
+
+         // Fetch already-applied versions
+         const [aApplied] = await pConnection.query ('SELECT version FROM schema_migrations ORDER BY version ASC');
+         const aAppliedSet = new Set (aApplied.map (r => r.version));
+
+         // Read migration files sorted by version number
+         const aFiles = fs.readdirSync (sMigrationsDir)
+            .filter  (sFile => /^\d+_.+\.sql$/i.test (sFile))
+            .sort ();
+
+         for (const sFile of aFiles)
+         {
+            const nVersion = parseInt (sFile, 10);
+
+            if (aAppliedSet.has (nVersion))
+               continue;
+
+            console.log (`Applying migration: ${sFile}`);
+
+            const sSQLContent = fs.readFileSync (path.join (sMigrationsDir, sFile), 'utf8');
+            const aStatements = parseSQLWithDelimiters (sSQLContent);
+
+            for (const sStatement of aStatements)
+            {
+               if (!sStatement || sStatement.trim ().length === 0 || sStatement.trim ().match (/^--/))
+                  continue;
+
+               await pConnection.query (sStatement);
+            }
+
+            const sDescription = sFile.replace (/^\d+_/, '').replace (/\.sql$/i, '');
+            await pConnection.query (
+               'INSERT INTO schema_migrations (version, description) VALUES (?, ?)',
+               [nVersion, sDescription]
+            );
+
+            console.log (`Migration ${nVersion} applied successfully.`);
+         }
+      }
+      catch (err)
+      {
+         console.error ('Error running migrations:', err);
+         throw err;
+      }
+      finally
+      {
+         if (pConnection) await pConnection.end ();
+      }
+   }
+
    async onSQLReady (pMVSQL, err)
    {
       if (pMVSQL)
       {
          try
          {
-            // Initialize database if it doesn't exist
+            // Initialize database if it doesn't exist, then apply pending migrations
             await this.InitializeDatabase (pMVSQL);
+            await this.RunMigrations ();
 
             this.ReadFromEnv (Settings.MVSF, [ "nPort" ]);
 
@@ -265,7 +297,10 @@ class MVSF_Map
             this.#pServer.Run ();
 
             console.log ('SQL Server READY');
-            InitSQL (pMVSQL, this.#pServer, Settings.Info);
+            InitSQL    (pMVSQL, this.#pServer, null);
+            InitHealth (pMVSQL);
+
+            this.RegisterShutdown ();
          }
          catch (initErr)
          {
@@ -277,6 +312,18 @@ class MVSF_Map
       {
          console.log ('SQL Server Connect Error: ', err);
       }
+   }
+
+   RegisterShutdown ()
+   {
+      const Shutdown = (sSignal) =>
+      {
+         console.log (`Received ${sSignal}. Shutting down gracefully...`);
+         process.exit (0);
+      };
+
+      process.once ('SIGTERM', () => Shutdown ('SIGTERM'));
+      process.once ('SIGINT',  () => Shutdown ('SIGINT'));
    }
 }
 
